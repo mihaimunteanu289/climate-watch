@@ -2,9 +2,10 @@
 #
 # See documentation in:
 # https://docs.scrapy.org/en/latest/topics/spider-middleware.html
+import cloudscraper
 
 from scrapy import signals
-
+from scrapy.http import HtmlResponse
 # useful for handling different item types with a single interface
 from itemadapter import is_item, ItemAdapter
 
@@ -101,3 +102,22 @@ class MeteoNewsDownloaderMiddleware:
 
     def spider_opened(self, spider):
         spider.logger.info("Spider opened: %s" % spider.name)
+
+
+class CloudflareMiddleware(object):
+    def process_request(self, request, spider):
+        user_agent = request.headers.get('User-Agent')
+        scraper = cloudscraper.create_scraper(
+            browser={
+                'user_agent': user_agent
+            }
+        )
+
+        if request.method == 'GET':
+            content = scraper.get(request.url).content
+        elif request.method == 'POST':
+            content = scraper.post(request.url, data=request.body).content
+        else:
+            return None
+
+        return HtmlResponse(request.url, body=content, encoding='utf-8', request=request)

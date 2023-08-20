@@ -1,10 +1,14 @@
 import scrapy
-import time
+import warnings
+
+from scrapy.exceptions import ScrapyDeprecationWarning
+warnings.simplefilter('ignore', ScrapyDeprecationWarning)
 
 class MeteoSpider(scrapy.Spider):
     name = 'MeteoSpider'
     allowed_domains = ['stirileprotv.ro']
-    start_urls = ['https://stirileprotv.ro/stiri/vremea']
+    base_url = 'https://stirileprotv.ro/stiri/vremea/?page='
+    start_page = 1  # Initialize the page counter
 
     custom_settings = {
         'FEEDS': {
@@ -14,38 +18,44 @@ class MeteoSpider(scrapy.Spider):
                 'overwrite': True
             }
         },
-        'USER_AGENT': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36",
-        'ROBOTSTXT_OBEY': True,
-        'DOWNLOAD_DELAY': 20, # Increasing download delay
-        # 'DOWNLOADER_MIDDLEWARES': {
-        #    'myproject.middlewares.RandomProxy': 100,  # Middleware to handle proxy rotation, requires more setup
-        #    'scrapy.downloadermiddlewares.httpproxy.HttpProxyMiddleware': 110,
-        # },
+        'RETRY_HTTP_CODES': [429, 500, 502, 503, 504, 522, 524, 408],
+        'USER_AGENT': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.2883.95 Safari/537.36',
+        'ROBOTSTXT_OBEY': False,
+        'DOWNLOAD_DELAY': 10,
+        'RETRY_TIMES': 20
     }
 
-    def parse(self, response):
-        # If we get a 429 error, respect the Retry-After header (if it exists)
-        if response.status == 429:
-            retry_after = response.headers.get('Retry-After')
-            if retry_after:
-                sleep_time = int(retry_after)
-                self.logger.debug(f"Got a 429 error. Sleeping for {sleep_time} seconds.")
-                time.sleep(sleep_time)
-                return self.make_request(response.url, callback=self.parse)
+    def start_requests(self):
+        # Start with the initial page
+        yield scrapy.Request(self.base_url + str(self.start_page), self.parse)
 
+    def handle_failure(self, failure):
+        self.logger.error(f"Request failed for URL: {failure.request.url}")
+        # After processing the page, increment the page counter
+        self.start_page += 1
+        # Proceed to the next page, even if the current page failed
+        if self.start_page <= 5:
+            yield scrapy.Request(self.base_url + str(self.start_page), self.parse, errback=self.handle_failure)
+
+    def parse(self, response):
         # Extracting the headers of all news articles
         for article in response.xpath('//article[contains(@class, "grid article")]'):
             title = article.xpath('.//div[@class="article-title"]/h2/a/text()').get()
-            if title:  # Ensure that a title was successfully extracted
+            date = article.xpath('.//div[@class="article-date"]/text()').get()
+            article_url = article.css('div.article-title h2 a::attr(href)').get()
+
+            # Store the extracted data only if title is present
+            if article_url:
                 yield {
                     'article_title': title.strip(),
+                    'article_date': date.strip() if date else None,
+                    'article_url': response.urljoin(article_url) if article_url else None
                 }
 
-        # Pagination
-        current_page_number = int(response.xpath('//div[@class="pagination"]/ul/li/a[contains(@class, "is-active")]/text()').get())
-        next_page_number = current_page_number + 1
-        last_page_number = int(response.xpath('//div[@class="pagination"]/ul/li[last()-1]/a/text()').get())
+        # After processing the page, increment the page counter
+        self.start_page += 1
 
-        if next_page_number <= last_page_number:
-            next_page_url = f'/stiri/vremea/?page={next_page_number}'
-            yield scrapy.Request(response.urljoin(next_page_url), callback=self.parse)
+        # If you only want to scrape a specific number of pages (e.g., the first 5):
+        if self.start_page <= 148:
+            yield scrapy.Request(self.base_url + str(self.start_page), self.parse, errback=self.handle_failure)
+
